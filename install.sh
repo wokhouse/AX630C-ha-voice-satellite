@@ -5,7 +5,7 @@ set -euo pipefail
 
 : "${MODULE_IP:?set MODULE_IP to the Module LLM address}"
 MODULE_USER="${MODULE_USER:-root}"
-DEST=/opt/ha-llm-satellite
+DEST=/opt/ax630c-ha-voice-satellite
 
 echo ">> copying repo to ${MODULE_USER}@${MODULE_IP}:${DEST}"
 ssh "${MODULE_USER}@${MODULE_IP}" "mkdir -p ${DEST}"

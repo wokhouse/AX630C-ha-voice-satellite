@@ -1,4 +1,4 @@
-# ha-llm-satellite
+# AX630C-ha-voice-satellite
 
 Home Assistant voice satellite firmware layer for the **M5Stack Module LLM** (AX630C) + **LLM Mate** (Ethernet).
 

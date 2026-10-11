@@ -45,7 +45,7 @@ HA is wired up, and confirm the color follows the pipeline state.
 ## 5. Install from the PC
 
 ```sh
-cd ~/ha-llm-satellite
+cd ~/AX630C-ha-voice-satellite
 MODULE_IP=192.168.1.X ./install.sh
 ```
 
