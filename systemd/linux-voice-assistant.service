@@ -1,0 +1,19 @@
+[Unit]
+Description=Linux Voice Assistant (HA satellite, ESPHome protocol)
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/linux-voice-assistant
+EnvironmentFile=/etc/default/lva
+Environment=XDG_RUNTIME_DIR=/run/user/0
+Environment=PULSE_SERVER=/run/user/0/pulse/native
+Environment=PREFERENCES_FILE=/opt/linux-voice-assistant/preferences.json
+ExecStart=/opt/linux-voice-assistant/docker-entrypoint.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=LVA LED status bridge (LP5562)
+After=linux-voice-assistant.service
+BindsTo=linux-voice-assistant.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/lva-led-bridge/led_status.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
