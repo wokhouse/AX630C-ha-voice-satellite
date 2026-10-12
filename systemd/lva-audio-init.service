@@ -1,0 +1,17 @@
+[Unit]
+Description=LVA audio codec init (Axera ALC + mic gain)
+DefaultDependencies=no
+After=sound.target
+Wants=sound.target
+Before=linux-voice-assistant.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/lva-audio-init.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

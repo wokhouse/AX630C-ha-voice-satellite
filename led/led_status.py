@@ -47,7 +47,12 @@ COLORS = {
 
 
 def find_channels():
-    """Return {'r': path, 'g': path, 'b': path} of LED sysfs dirs."""
+    """Return {'r': path, 'g': path, 'b': path} of LED sysfs dirs.
+
+    Handles the bare one-letter channels this Module LLM exposes
+    (/sys/class/leds/R|G|B, from the LP5562 driver), as well as the usual
+    long forms (red, led-r, lp5562:G, ...).
+    """
     channels = {}
     if not os.path.isdir(LED_ROOT):
         return channels
@@ -56,20 +61,40 @@ def find_channels():
         if not os.path.isdir(path) or not os.path.exists(os.path.join(path, "brightness")):
             continue
         low = name.lower()
-        for ch in ("r", "g", "b"):
-            # match lp5562:R, led-r, red, etc.; skip triggers
-            if low.endswith(f":{ch.upper()}".lower()) or low.endswith(f"_{ch}") or low.endswith(ch):
-                if any(word in low for word in ("red", "green", "blue")) or "lp5562" in low:
-                    channels.setdefault(ch, path)
+        # Exact bare channel names first: R, G, B (case-insensitive).
+        if low in ("r", "g", "b"):
+            channels[low] = path
+            continue
         for word, ch in (("red", "r"), ("green", "g"), ("blue", "b")):
             if word in low:
                 channels[ch] = path
+                continue
+        for ch, letter in (("r", "r"), ("g", "g"), ("b", "b")):
+            if ch in channels:
+                continue
+            # led-r, lp5562:R, rgb:blue-style suffixes.
+            if low.endswith(f":{letter}") or low.endswith(f"_{letter}") or low.endswith(f"-{letter}"):
+                channels[ch] = path
     return channels
+
+
+def reset_triggers(channels):
+    """Set each channel's trigger to 'none' so brightness writes take effect."""
+    for ch, path in channels.items():
+        trigger = os.path.join(path, "trigger")
+        if not os.path.exists(trigger):
+            continue
+        try:
+            with open(trigger, "w") as f:
+                f.write("none")
+        except OSError as e:
+            print(f"led trigger reset failed {ch}: {e}", file=sys.stderr)
 
 
 class Led:
     def __init__(self, channels):
         self.channels = channels  # {'r': dir, ...}
+        reset_triggers(channels)
 
     def _write(self, ch, value):
         path = self.channels.get(ch)
