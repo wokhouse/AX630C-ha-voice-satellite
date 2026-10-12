@@ -119,3 +119,73 @@ Tuning notes, in order of usefulness:
 3. `TX RIGHT DIG GAIN` - a few dB, mostly not worth it.
 4. `MIC_AUTO_GAIN` / `MIC_NOISE_SUPPRESSION` in `/etc/default/lva` - the WebRTC
    extras sat within noise of each other (0.948 vs 0.942) and did not help.
+
+## 9. Playback clicks (Axera I2S period stall)
+
+Symptom: a continuous clicking/ticking from the speaker as soon as any sound is
+played (most obvious right after the wake chime, because that is the first time
+LVA opens the output stream). It keeps going while a stream is open and only
+stops when the sink suspends.
+
+Cause: the playback PCM is `hw:0,1`, exposed by PipeWire as
+`alsa_output.platform-sound.playback.1.0`, and its ALSA period size defaults to
+exactly PipeWire's quantum (1024 frames @ 16 kHz = 64 ms). The `dw_i2s` driver
+then stops and restarts the DMA on every period, logging one `dw_i2s_trigger`
+START/STOP pair per 64 ms. Each restart is audible, so an idle-but-open sink
+stream is a permanent click train. Confirm with:
+
+```sh
+dmesg -C; sleep 3; dmesg | grep -c dw_i2s_trigger   # ~25/s while clicking
+```
+
+Fix: give the hardware a smaller period so a 1024-frame quantum spans four of
+them, and the PCM is started once and left running. This lives in the same
+WirePlumber rule as the ACP bypass (`/etc/wireplumber/main.lua.d/51-lva-codec.lua`):
+
+```lua
+table.insert(alsa_monitor.rules, {
+  matches = { { { 'api.alsa.path', 'matches', 'hw:0,1' } } },
+  apply_properties = { ['api.alsa.period-size'] = 256 },
+})
+```
+
+Then `XDG_RUNTIME_DIR=/run/user/0 systemctl --user restart wireplumber`.
+
+Verify: `grep period_size /proc/asound/card0/pcm1p/sub0/hw_params` reports 256
+while playing, and a 10 s tone produces ~1 DMA trigger instead of ~227.
+`api.alsa.disable-batch` does **not** help on this driver.
+
+## 9. Playback clicks (Axera I2S period stall)
+
+Symptom: a continuous clicking/ticking from the speaker as soon as any sound is
+played (most obvious right after the wake chime, because that is the first time
+LVA opens the output stream). It keeps going while a stream is open and only
+stops when the sink suspends.
+
+Cause: the playback PCM is `hw:0,1`, exposed by PipeWire as
+`alsa_output.platform-sound.playback.1.0`, and its ALSA period size defaults to
+exactly PipeWire's quantum (1024 frames @ 16 kHz = 64 ms). The `dw_i2s` driver
+then stops and restarts the DMA on every period, logging one `dw_i2s_trigger`
+START/STOP pair per 64 ms. Each restart is audible, so an idle-but-open sink
+stream is a permanent click train. Confirm with:
+
+```sh
+dmesg -C; sleep 3; dmesg | grep -c dw_i2s_trigger   # ~25/s while clicking
+```
+
+Fix: give the hardware a smaller period so a 1024-frame quantum spans four of
+them, and the PCM is started once and left running. This lives in the same
+WirePlumber rule as the ACP bypass (`/etc/wireplumber/main.lua.d/51-lva-codec.lua`):
+
+```lua
+table.insert(alsa_monitor.rules, {
+  matches = { { { 'api.alsa.path', 'matches', 'hw:0,1' } } },
+  apply_properties = { ['api.alsa.period-size'] = 256 },
+})
+```
+
+Then `XDG_RUNTIME_DIR=/run/user/0 systemctl --user restart wireplumber`.
+
+Verify: `grep period_size /proc/asound/card0/pcm1p/sub0/hw_params` reports 256
+while playing, and a 10 s tone produces ~1 DMA trigger instead of ~227.
+`api.alsa.disable-batch` does **not** help on this driver.

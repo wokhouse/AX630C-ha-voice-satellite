@@ -117,7 +117,22 @@ table.insert(alsa_monitor.rules, {
     ['api.alsa.use-acp'] = false,
     ['api.acp.auto-profile'] = false,
     ['audio.channels'] = 2,
+    ['audio.format'] = 'S32LE',
   },
+})
+
+-- Axera I2S master PCM (playback) stalls its DMA on every hardware period when
+-- the ALSA period equals PipeWire's quantum (1024 frames @ 16 kHz = 64 ms). The
+-- dw_i2s driver then logs a START/STOP pair per period (visible in dmesg as
+-- "dw_i2s_trigger"), and every restart is audible, so merely opening a sink
+-- stream produces a continuous click/tick train -- most obvious right after the
+-- wake chime, because that is the first time the stream is opened. Shrinking the
+-- hardware period to 256 frames lets the 1024-frame quantum span four periods,
+-- so the PCM is started once and runs continuously (verified: ~227 DMA triggers
+-- for a 10 s tone before, 1 after).
+table.insert(alsa_monitor.rules, {
+  matches = { { { 'api.alsa.path', 'matches', 'hw:0,1' } } },
+  apply_properties = { ['api.alsa.period-size'] = 256 },
 })
 WIREPLUMBER
 
