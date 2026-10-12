@@ -5,7 +5,14 @@ BindsTo=linux-voice-assistant.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/lva-led-bridge/led_status.py
+# Use the LVA virtualenv interpreter: jammy's system python3 ships websockets
+# 9.1, whose asyncio.Lock(loop=...) usage raises TypeError on Python 3.10+. The
+# venv (Python 3.11 + websockets 12) is installed by setup-module.sh and is the
+# only interpreter on this image with a working websockets client.
+# --debug is what makes the bridge log every `event=...` line, which is the only
+# way to see the wake/listening/thinking states from `journalctl -u
+# lva-led-bridge`. The event rate is a handful of lines per interaction.
+ExecStart=/opt/linux-voice-assistant/.venv/bin/python /opt/lva-led-bridge/led_status.py --debug
 Restart=always
 RestartSec=5
 
