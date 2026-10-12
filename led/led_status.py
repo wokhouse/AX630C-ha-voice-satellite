@@ -13,8 +13,10 @@ State map:
   tts_speaking          -> green
   pipeline_error        -> red, 3 blinks, then previous state
   disconnected          -> red steady
-  connected (snapshot
-  ha_connected=true)    -> follow pipeline state
+  snapshot with
+  ha_connected=true, or
+  zeroconf status=
+  "connected"           -> follow pipeline state
 
 Channel names are auto-detected: any /sys/class/leds entry whose name
 contains R/G/B (case-insensitive) is treated as one channel. Verify the
@@ -145,8 +147,14 @@ async def run(uri: str, led: Led, debug: bool):
 
                     if event == "snapshot":
                         state = "idle" if data.get("ha_connected") else "disconnected"
-                    elif event == "connected":
-                        state = "idle"
+                    elif event == "zeroconf":
+                        # There is no `connected` event in LVAEvent. The documented
+                        # "HA is reachable" signal is zeroconf with status
+                        # "connected" (satellite.py emits it on the HA handshake;
+                        # __main__.py emits "getting_started" at startup). Handling
+                        # only `disconnected` leaves the LED red after boot even
+                        # when HA is connected, until some pipeline event arrives.
+                        state = "idle" if data.get("status") == "connected" else "disconnected"
                     elif event == "disconnected":
                         state = "disconnected"
                     elif event == "pipeline_error":
