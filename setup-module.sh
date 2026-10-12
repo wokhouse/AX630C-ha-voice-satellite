@@ -6,6 +6,14 @@ DEST="$(cd "$(dirname "$0")" && pwd)"
 LVA_DIR=/opt/linux-voice-assistant
 SVC_USER=root  # module ships a single-user Ubuntu; revisit if a service user is added
 
+# The address HA's ESPHome entry is pinned to. The vendor image's DHCP lease is
+# not stable (observed .230 then .100 across a power cycle), so we keep a static
+# secondary address on the interface and bind the satellite endpoint to it.
+# If you have made a DHCP reservation on the router, set ALIAS_IP to that address
+# (or leave NET_DEV/ALIAS_IP as they are and the units still work).
+NET_DEV="${NET_DEV:-eth0}"
+ALIAS_IP="${ALIAS_IP:-192.168.1.230}"
+
 echo ">> apt dependencies"
 export DEBIAN_FRONTEND=noninteractive
 # The vendor image ships /etc/apt/apt.conf.d/01proxy pointing at a now-dead
@@ -138,7 +146,11 @@ WIREPLUMBER
 
 # ------------------------------------------------------------ config + units
 echo ">> install our config + units"
+# HOST must match the address we bind the alias to (see the lva.env comment: LVA
+# advertises whatever HOST is over mDNS), so rewrite it rather than shipping a
+# site-specific literal.
 install -m 644 "$DEST/config/lva.env" /etc/default/lva
+sed -i "s|^HOST=.*|HOST=$ALIAS_IP|" /etc/default/lva
 install -m 644 "$DEST/systemd/linux-voice-assistant.service" /etc/systemd/system/
 install -m 644 "$DEST/systemd/lva-led-bridge.service" /etc/systemd/system/
 install -d /opt/lva-led-bridge
@@ -154,6 +166,42 @@ install -m 755 "$DEST/led/led_status.py" /opt/lva-led-bridge/
 # runs before LVA, so it survives reboots instead of only manual `amixer` calls.
 install -m 755 "$DEST/lva-audio-init.sh" /usr/local/sbin/lva-audio-init.sh
 install -m 644 "$DEST/systemd/lva-audio-init.service" /etc/systemd/system/
+
+# ...and the ALSA state save/restore that keeps undoing it.
+#
+# alsa-restore.service runs `alsactl restore` at boot and `alsactl store` at
+# shutdown, and /lib/udev/rules.d/90-alsa-restore.rules runs `alsactl restore
+# <card>` on every controlC* add. The stored state is whatever the codec was
+# doing at the last shutdown; on this card that includes 'DAC MUTE' = true, i.e.
+# no chime and no TTS. After=alsa-restore.service does not save us: the card is
+# probed late and the udev restore can land after lva-audio-init has already
+# applied and verified its settings. So remove the state, stop it being written
+# again, and shadow the udev rule. LVA's own init is then the only writer.
+install -m 644 "$DEST/config/udev-rules.d/90-alsa-restore.rules" /etc/udev/rules.d/90-alsa-restore.rules
+rm -f /var/lib/alsa/asound.state
+systemctl mask alsa-restore.service
+
+# ------------------------------------------------------------------ addressing
+# Keep  <ALIAS_IP>present. A `post-up ip addr add` in /etc/network/interfaces
+# is not enough: dhclient rebinds without ifup (observed ~80 s after boot, when
+# NTP stepped the clock) and dhclient-script flushes the interface's addresses,
+# which takes the unlabelled secondary with it. Re-assert from a dhclient exit
+# hook plus a slow timer, and drop the now-misleading post-up hook.
+echo ">> install the stable-address units"
+printf 'NET_DEV=%s\nLVA_ALIAS_IP=%s\n' "$NET_DEV" "$ALIAS_IP" > /etc/default/lva-net-alias
+install -m 755 "$DEST/lva-net-alias.sh" /usr/local/sbin/lva-net-alias.sh
+install -m 644 "$DEST/systemd/lva-net-alias.service" /etc/systemd/system/
+install -m 644 "$DEST/systemd/lva-net-alias.timer" /etc/systemd/system/
+install -d /etc/dhcp/dhclient-exit-hooks.d
+install -m 644 "$DEST/config/dhclient-exit-hooks.d/lva-net-alias" /etc/dhcp/dhclient-exit-hooks.d/lva-net-alias
+if [ -f /etc/network/interfaces ] && grep -q "$ALIAS_IP" /etc/network/interfaces; then
+  echo ">> removing the superseded post-up alias hook from /etc/network/interfaces"
+  # Exactly what an earlier revision of this repo wrote there.
+  sed -i -e "/ip addr \(add\|del\) $ALIAS_IP/d" \
+         -e "/# Keep a second, stable address at/d" \
+         -e "/# pinned to it and the module DHCP lease is not guaranteed/d" \
+         /etc/network/interfaces
+fi
 
 # Start PipeWire + WirePlumber + pipewire-pulse in root's user session and verify
 # the socket appears before starting LVA (its entrypoint waits up to 30 s).
@@ -194,19 +242,29 @@ if command -v pipewire >/dev/null; then
 fi
 
 systemctl daemon-reload
+systemctl daemon-reexec 2>/dev/null || true
 systemctl enable --now lva-audio-init.service
+systemctl enable --now lva-net-alias.service lva-net-alias.timer
+/usr/local/sbin/lva-net-alias.sh --nowait || true
 systemctl enable --now linux-voice-assistant.service
 systemctl enable --now lva-led-bridge.service
 
+# udev rules are read by the running manager, so hand it the new file.
+udevadm control --reload-rules 2>/dev/null || true
+
 echo ">> verify"
-systemctl --no-pager status lva-audio-init.service linux-voice-assistant.service lva-led-bridge.service | head -40
+systemctl --no-pager status lva-audio-init.service lva-net-alias.service linux-voice-assistant.service lva-led-bridge.service | head -40
 echo ">> codec state:"
-for c in "INPUT MUX" "ALC ENABLE" "TX LEFT DIG GAIN" "TX RIGHT DIG GAIN"; do
+for c in "INPUT MUX" "ALC ENABLE" "DAC MUTE" "TX LEFT DIG GAIN" "TX RIGHT DIG GAIN"; do
   printf '   %-20s ' "$c"; amixer -c 0 sget "$c" 2>/dev/null | tail -1
 done
+echo ">> alsactl must not be able to undo the above:"
+systemctl is-enabled alsa-restore.service; ls -l /var/lib/alsa/asound.state 2>&1 | head -1
+echo ">> addresses on $NET_DEV (expect $ALIAS_IP present):"
+ip -4 addr show "$NET_DEV"
 echo ">> audio devices:"
 aplay -L | grep -E 'plughw|default' | head; arecord -L | grep -E 'plughw|default' | head
 echo ">> LED devices:"
 ls /sys/class/leds/ || echo "NO LEDS FOUND - check LP5562 driver"
 
-echo ">> done. Satellite endpoint: $(hostname -I | awk '{print $1}'):6053"
+echo ">> done. Satellite endpoint: $ALIAS_IP:6053"

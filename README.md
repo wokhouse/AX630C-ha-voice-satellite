@@ -47,11 +47,30 @@ From this repo on your PC:
 ```sh
 # 1. discover the module (serial console: `ip a`), then:
 MODULE_IP=192.168.1.X ./install.sh
+
+# with a dedicated key (this is what the module's root login uses here):
+MODULE_IP=192.168.1.X SSH_OPTS="-i ~/.ssh/id_ed25519_m5llm" ./install.sh
 ```
 
-`install.sh` rsyncs this repo to the module and runs `setup-module.sh` there. Setup installs apt deps, clones and builds linux-voice-assistant, pins audio to the onboard card, installs both systemd units, and enables them.
+`install.sh` rsyncs this repo to the module and runs `setup-module.sh` there. Setup installs apt deps, clones and builds linux-voice-assistant, pins audio to the onboard card, pins a stable secondary address (`192.168.1.230`) to `eth0`, installs the systemd units, and enables them.
 
-Then in Home Assistant: **Settings → Devices & services → ESPHome → Set up another instance**, enter `<MODULE_IP>:6053`. The satellite appears as a device. Select "okay nabu" as the wake word in your voice assistant settings.
+Then in Home Assistant: **Settings → Devices & services → ESPHome → Set up another instance**, enter `192.168.1.230:6053` — the alias, not the DHCP lease. The satellite appears as a device. Select "okay nabu" as the wake word in your voice assistant settings.
+
+## Verify it without Home Assistant
+
+Wake-word detection only runs while *some* client is connected, so a module with
+nothing attached looks dead. `tools/ha-test-client.py` is a real `aioesphomeapi`
+client that arms detection, prints the wake event, and drives the rest of the
+pipeline with synthetic HA events:
+
+```sh
+scp -i ~/.ssh/id_ed25519_m5llm tools/ha-test-client.py root@192.168.1.230:/tmp/
+ssh -i ~/.ssh/id_ed25519_m5llm root@ <ALIAS_IP>\
+  '/opt/linux-voice-assistant/.venv/bin/python /tmp/ha-test-client.py --drive'
+```
+
+Expected output, and the rest of the bring-up sequence, is in
+[`docs/bringup.md`](docs/bringup.md).
 
 ## LED states
 
@@ -69,18 +88,40 @@ Then in Home Assistant: **Settings → Devices & services → ESPHome → Set up
 ## Layout
 
 - `install.sh` — host-side: rsync + ssh bootstrap
-- `setup-module.sh` — module-side: deps, LVA build, systemd units
-- `config/lva.env` — environment for the LVA service (wake model, audio devices)
-- `systemd/linux-voice-assistant.service`, `systemd/lva-led-bridge.service`
+- `setup-module.sh` — module-side: deps, LVA build, systemd units, mixer state, stable address
+- `lva-audio-init.sh` — codec state at boot (hardware ALC on, DAC unmuted, mic gain), verified by readback
+- `lva-net-alias.sh` — idempotently pins `192.168.1.230` to `eth0`
+- `config/lva.env` — environment for the LVA service (wake model, audio devices, bind address)
+- `config/dhclient-exit-hooks.d/lva-net-alias` — re-pin the alias on every DHCP state change
+- `config/udev-rules.d/90-alsa-restore.rules` — empty file that shadows the vendor ALSA state restorer
+- `systemd/linux-voice-assistant.service`, `systemd/lva-led-bridge.service`,
+  `systemd/lva-audio-init.service`, `systemd/lva-net-alias.service`, `systemd/lva-net-alias.timer`
 - `led/led_status.py` — peripheral API → LP5562 sysfs bridge
-- `docs/bringup.md` — first bring-up over serial console
+- `tools/ha-test-client.py` — real `aioesphomeapi` client: proves the pipeline without HA
+- `docs/bringup.md` — first bring-up over serial console, and everything measured since
 
-## Known unknowns (verify at bring-up)
+## Verified on this hardware
 
-- Exact `/sys/class/leds/` names for the LP5562 channels — `led_status.py` auto-detects by name pattern; confirm on first boot.
-- ALSA device string for the MSM421A mic (expected `plughw:0,0`) and speaker (`plughw:0,1`).
-- Whether M5's stock image ships PipeWire; setup installs it if missing.
-- 1 GB usable RAM: run LVA bare metal, no Docker. Stop M5's stock `llm-*` services to free memory.
+- LED channels are `/sys/class/leds/{R,G,B}` — auto-detection finds them.
+- Capture is `hw:0,0` (PipeWire `alsa_input.platform-sound.capture.0.0`), playback
+  `hw:0,1` (`alsa_output.platform-sound.playback.1.0`). The mic is on capture
+  channel 1; channel 0 is silent.
+- The stock image ships PipeWire/WirePlumber, but its units carry
+  `ConditionUser=!root` and root is the only user — `setup-module.sh` overrides that.
+- Wake word works after a real reboot: `Okay Nabu` at probability 0.892 (threshold
+  0.850), chime audible, LED state machine correct, one I2S DMA start/stop for the
+  whole interaction.
+- `192.168.1.230` survives boot and DHCP rebinds; mDNS advertises it on :6053.
+
+## Still open
+
+- Home Assistant has never connected to this module — the ESPHome entry has to be
+  added/reloaded in the HA UI against `192.168.1.230:6053`. Everything on the
+  module side is verified with `tools/ha-test-client.py`.
+- No DHCP reservation for the module's MAC on the router yet. The alias works
+  around it; a reservation is still the right fix for the primary address.
+- 1 GB usable RAM: LVA runs bare metal, no Docker; M5's stock `llm-*` services are
+  stopped.
 
 ## Upstream
 

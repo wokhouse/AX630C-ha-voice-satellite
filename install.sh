@@ -1,17 +1,35 @@
 #!/usr/bin/env bash
 # Host-side bootstrap. Run from this directory.
 #   MODULE_IP=192.168.1.X ./install.sh
+#
+# The vendor image's root login wants a specific key, and plain `ssh root@...`
+# fails with "Operation not permitted". Pass it through:
+#   MODULE_IP=192.168.1.X SSH_OPTS="-i ~/.ssh/id_ed25519_m5llm" ./install.sh
+#
+# ALIAS_IP (default 192.168.1.230) is the stable address the satellite is bound
+# to and the address to give Home Assistant; see docs/bringup.md section 10.
 set -euo pipefail
 
 : "${MODULE_IP:?set MODULE_IP to the Module LLM address}"
 MODULE_USER="${MODULE_USER:-root}"
+SSH_OPTS="${SSH_OPTS:-}"
+# Passed through to setup-module.sh, which pins this address to the interface and
+# binds the satellite endpoint to it. Home Assistant's ESPHome entry must use
+# THIS address, not MODULE_IP - MODULE_IP is only how you reach the box once.
+NET_DEV="${NET_DEV:-eth0}"
+ALIAS_IP="${ALIAS_IP:-192.168.1.230}"
+export NET_DEV ALIAS_IP
 DEST=/opt/ax630c-ha-voice-satellite
+# shellcheck disable=SC2086
+module_ssh() { ssh $SSH_OPTS "$MODULE_USER@$MODULE_IP" "$@"; }
 
 echo ">> copying repo to ${MODULE_USER}@${MODULE_IP}:${DEST}"
-ssh "${MODULE_USER}@${MODULE_IP}" "mkdir -p ${DEST}"
-rsync -a --exclude '.git' ./ "${MODULE_USER}@${MODULE_IP}:${DEST}/"
+module_ssh "mkdir -p ${DEST}"
+# shellcheck disable=SC2086
+rsync -a --exclude '.git' -e "ssh $SSH_OPTS" ./ "${MODULE_USER}@${MODULE_IP}:${DEST}/"
 
 echo ">> running setup-module.sh on the module (this takes a while: build on 2x A53)"
-ssh -t "${MODULE_USER}@${MODULE_IP}" "cd ${DEST} && bash setup-module.sh"
+# shellcheck disable=SC2086
+ssh -t $SSH_OPTS "$MODULE_USER@$MODULE_IP" "cd ${DEST} && bash setup-module.sh"
 
-echo ">> done. In Home Assistant: Settings -> Devices & services -> ESPHome -> Set up another instance -> ${MODULE_IP}:6053"
+echo ">> done. In Home Assistant: Settings -> Devices & services -> ESPHome -> Set up another instance -> ${ALIAS_IP}:6053"
