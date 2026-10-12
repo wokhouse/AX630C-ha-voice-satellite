@@ -1,0 +1,16 @@
+# Re-assert the stable secondary address after every dhclient state change.
+#
+# dhclient-script flushes the interface's IPv4 addresses when it (re)binds -
+# `ip -4 addr flush dev eth0 label eth0` in the PREINIT/BOUND paths, and an
+# unlabelled `ip addr add` gets exactly that label - so the secondary address
+# HA's ESPHome entry is pinned to disappears on a rebind even when the lease
+# itself did not change. Observed at ~80 s after boot, right after NTP stepped
+# the clock and dhclient restarted its binding.
+#
+# This file is SOURCED by dhclient-script (run_hookdir), so: no `exit`, no
+# `set -u`, and keep it quiet.
+case "$reason" in
+  PREINIT|BOUND|REBOOT|REBIND|RENEW|FAIL)
+    /usr/local/sbin/lva-net-alias.sh --nowait >/dev/null 2>&1 || true
+    ;;
+esac

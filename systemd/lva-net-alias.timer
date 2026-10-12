@@ -1,0 +1,15 @@
+[Unit]
+Description=Re-assert the stable secondary IP for the HA satellite endpoint
+Documentation=file:/opt/ax630c-ha-voice-satellite/docs/bringup.md
+
+[Timer]
+# The dhclient exit hook covers every DHCP rebind; this is the belt-and-braces
+# pass for anything else that flushes the interface (ifdown/ifup, a manual
+# `ip addr flush`, a flapping link). Cheap and idempotent.
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=1min
+RandomizedDelaySec=15s
+
+[Install]
+WantedBy=timers.target

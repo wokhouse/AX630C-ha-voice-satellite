@@ -1,0 +1,17 @@
+[Unit]
+Description=Ensure stable secondary IP for the HA satellite endpoint
+After=network-online.target networking.service ifplugd.service
+Wants=network-online.target
+Before=linux-voice-assistant.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+EnvironmentFile=-/etc/default/lva-net-alias
+ExecStart=/usr/local/sbin/lva-net-alias.sh
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
