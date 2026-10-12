@@ -273,16 +273,32 @@ back, and can drive the rest of the pipeline with synthetic HA events so the LED
 state machine and the TTS path are exercised end to end.
 
 ```sh
-scp -i ~/.ssh/id_ed25519_m5llm tools/ha-test-client.py root@MODULE:/tmp/
-ssh -i ~/.ssh/id_ed25519_m5llm root@MODULE
-/opt/linux-voice-assistant/.venv/bin/python /tmp/ha-test-client.py \
-  --host  <ALIAS_IP>--port 6053 --timeout 60 --drive \
-  --tts-url /opt/linux-voice-assistant/sounds/timer_finished.flac
-# in a second shell, while it is running:
-espeak-ng -v en-us+f3 -s 150 -w /tmp/nabu_raw.wav "okay nabu"
-ffmpeg -y -v error -i /tmp/nabu_raw.wav -ar 16000 -ac 1 /tmp/nabu.wav
-XDG_RUNTIME_DIR=/run/user/0 paplay --device=alsa_output.platform-sound.playback.1.0 /tmp/nabu.wav
+# One shot from the PC. Note the path: /tmp is wiped on reboot, the repo copy at
+# /opt/ax630c-ha-voice-satellite is not, and install.sh already put it there.
+K=~/.ssh/id_ed25519_m5llm; R=/opt/ax630c-ha-voice-satellite
+ssh -i $K root@ <ALIAS_IP>"export XDG_RUNTIME_DIR=/run/user/0; dmesg -C
+  nohup /opt/linux-voice-assistant/.venv/bin/python $R/tools/ha-test-client.py \
+    --timeout 90 --drive --tts-url /opt/linux-voice-assistant/sounds/timer_finished.flac \
+    > /tmp/haclient.log 2>&1 &
+  for i in \$(seq 1 30); do grep -q subscribed /tmp/haclient.log && break; sleep 1; done
+  sleep 3
+  paplay --device=alsa_output.platform-sound.playback.1.0 $R/tools/okay-nabu.wav
+  sleep 4
+  paplay --device=alsa_output.platform-sound.playback.1.0 $R/tools/okay-nabu.wav
+  sleep 16
+  cat /tmp/haclient.log
+  echo i2s: \$(dmesg | grep -c dw_i2s_trigger)"
 ```
+
+Two traps here, both of which produced a false negative at least once:
+
+- **Wait for `subscribed` before making the sound.** Detection is armed by the
+  subscription, and the first connection after a boot takes ~10 s (cold caches).
+  Play the stimulus too early and you get silence plus a confusing "no wake word
+  within 60s".
+- **`tools/okay-nabu.wav` is committed on purpose** - espeak-ng "okay nabu",
+  16 kHz mono, the same sample rate and format the mic pipeline uses. A fixed
+  stimulus is what makes "it woke this time" mean something.
 
 Playing the wake word out of the speaker and re-capturing it with the mic is a
 legitimate test: it exercises capture, model, network, and playback in one loop.
@@ -312,6 +328,22 @@ the LED goes red.
 While that runs, `dmesg | grep -c dw_i2s_trigger` should print **2** for a whole
 interaction (one START, one STOP), not one pair per 64 ms. That is the click
 regression check from section 9.
+
+This exact sequence was last run minutes after a plain `systemctl reboot` with no
+manual commands in between, and the boot left behind:
+
+```sh
+ip -4 addr show eth0            #  <ALIAS_IP>present, DHCP lease (.100) as secondary
+systemctl is-active linux-voice-assistant lva-led-bridge lva-net-alias.timer   # active active active
+journalctl -u lva-audio-init -b | grep lva-audio-init.sh   # "ALC on and DAC unmuted"
+ss -tlnp | grep 6053            # LISTEN 192.168.1.230:6053
+systemctl is-enabled alsa-restore                           # masked
+amixer -c 0 cget name='ALC ENABLE' | tail -1               # values=on
+```
+
+Wake word then fired at probability 0.905 (threshold 0.850) with the full LED
+sequence and 2 I2S trigger lines. If a boot does *not* look like this, the alias
+and the codec state are the two things that have ever broken, in that order.
 
 ## 12. Still open, and one gotcha
 

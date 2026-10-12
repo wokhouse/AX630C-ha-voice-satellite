@@ -64,10 +64,16 @@ client that arms detection, prints the wake event, and drives the rest of the
 pipeline with synthetic HA events:
 
 ```sh
-scp -i ~/.ssh/id_ed25519_m5llm tools/ha-test-client.py root@192.168.1.230:/tmp/
+# install.sh already put tools/ on the module; /tmp is wiped on reboot, this is not
 ssh -i ~/.ssh/id_ed25519_m5llm root@ <ALIAS_IP>\
-  '/opt/linux-voice-assistant/.venv/bin/python /tmp/ha-test-client.py --drive'
+  '/opt/linux-voice-assistant/.venv/bin/python /opt/ax630c-ha-voice-satellite/tools/ha-test-client.py --drive'
+# then, from a second shell, say "okay nabu" — or play the committed stimulus:
+#   XDG_RUNTIME_DIR=/run/user/0 paplay --device=alsa_output.platform-sound.playback.1.0 \
+#     /opt/ax630c-ha-voice-satellite/tools/okay-nabu.wav
 ```
+
+Wait for the client's `subscribed` line before making a sound — detection is armed
+by the subscription, and the first connection after a boot takes ~10 s.
 
 Expected output, and the rest of the bring-up sequence, is in
 [`docs/bringup.md`](docs/bringup.md).
@@ -98,6 +104,7 @@ Expected output, and the rest of the bring-up sequence, is in
   `systemd/lva-audio-init.service`, `systemd/lva-net-alias.service`, `systemd/lva-net-alias.timer`
 - `led/led_status.py` — peripheral API → LP5562 sysfs bridge
 - `tools/ha-test-client.py` — real `aioesphomeapi` client: proves the pipeline without HA
+- `tools/okay-nabu.wav` — fixed "okay nabu" stimulus (16 kHz mono) for that test
 - `docs/bringup.md` — first bring-up over serial console, and everything measured since
 
 ## Verified on this hardware
@@ -108,9 +115,9 @@ Expected output, and the rest of the bring-up sequence, is in
   channel 1; channel 0 is silent.
 - The stock image ships PipeWire/WirePlumber, but its units carry
   `ConditionUser=!root` and root is the only user — `setup-module.sh` overrides that.
-- Wake word works after a real reboot: `Okay Nabu` at probability 0.892 (threshold
-  0.850), chime audible, LED state machine correct, one I2S DMA start/stop for the
-  whole interaction.
+- Wake word works after a real reboot: `Okay Nabu` at probability 0.87–0.91 across
+  runs (threshold 0.850), chime audible, LED state machine correct, one I2S DMA
+  start/stop for the whole interaction.
 - `192.168.1.230` survives boot and DHCP rebinds; mDNS advertises it on :6053.
 
 ## Still open
