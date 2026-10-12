@@ -8,6 +8,10 @@
 #
 # ALIAS_IP (default 192.168.1.230) is the stable address the satellite is bound
 # to and the address to give Home Assistant; see docs/bringup.md section 10.
+#
+# LVA_MAC (default: derived from /etc/machine-id) is the MAC pinned on the
+# interface. The board has no MAC in hardware, so it is random every boot until
+# this is pinned; set it to whatever you reserved in your router.
 set -euo pipefail
 
 : "${MODULE_IP:?set MODULE_IP to the Module LLM address}"
@@ -18,7 +22,8 @@ SSH_OPTS="${SSH_OPTS:-}"
 # THIS address, not MODULE_IP - MODULE_IP is only how you reach the box once.
 NET_DEV="${NET_DEV:-eth0}"
 ALIAS_IP="${ALIAS_IP:-192.168.1.230}"
-export NET_DEV ALIAS_IP
+LVA_MAC="${LVA_MAC:-}"
+export NET_DEV ALIAS_IP LVA_MAC
 DEST=/opt/ax630c-ha-voice-satellite
 # shellcheck disable=SC2086
 module_ssh() { ssh $SSH_OPTS "$MODULE_USER@$MODULE_IP" "$@"; }

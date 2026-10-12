@@ -14,6 +14,12 @@ SVC_USER=root  # module ships a single-user Ubuntu; revisit if a service user is
 NET_DEV="${NET_DEV:-eth0}"
 ALIAS_IP="${ALIAS_IP:-192.168.1.230}"
 
+# Ethernet MAC to pin on NET_DEV. Leave empty to derive one from /etc/machine-id.
+# See config/udev-rules.d/90-lva-mac.rules for why this is needed at all: the
+# board has no MAC in hardware, so it changes every boot and a router-side
+# reservation cannot hold. Set this to whatever you reserved in the router.
+LVA_MAC="${LVA_MAC:-}"
+
 echo ">> apt dependencies"
 export DEBIAN_FRONTEND=noninteractive
 # The vendor image ships /etc/apt/apt.conf.d/01proxy pointing at a now-dead
@@ -181,6 +187,19 @@ install -m 644 "$DEST/config/udev-rules.d/90-alsa-restore.rules" /etc/udev/rules
 rm -f /var/lib/alsa/asound.state
 systemctl mask alsa-restore.service
 
+# ------------------------------------------------------------- ethernet MAC
+# The board has no MAC in hardware (ethtool -P is 00:00:00:00:00:00, the DT has
+# no local-mac-address, U-Boot has no ethaddr), so the driver invents a random
+# one every boot and a router-side reservation cannot hold. Pin one from a unit
+# ordered before ifupdown - see lva-net-mac.sh for why a udev rule does not work
+# here (the kernel refuses the write while the interface is IFF_UP).
+#
+# Default to the MAC the box is using right now rather than inventing a new one:
+# LVA derives its ESPHome node name from the MAC, so a new MAC means a new node
+# name and Home Assistant sees a different device.
+ETH_MAC="${LVA_MAC:-$(cat "/sys/class/net/$NET_DEV/address")}"
+echo ">> will pin the ethernet MAC to $ETH_MAC on every boot"
+
 # ------------------------------------------------------------------ addressing
 # Keep  <ALIAS_IP>present. A `post-up ip addr add` in /etc/network/interfaces
 # is not enough: dhclient rebinds without ifup (observed ~80 s after boot, when
@@ -188,7 +207,9 @@ systemctl mask alsa-restore.service
 # which takes the unlabelled secondary with it. Re-assert from a dhclient exit
 # hook plus a slow timer, and drop the now-misleading post-up hook.
 echo ">> install the stable-address units"
-printf 'NET_DEV=%s\nLVA_ALIAS_IP=%s\n' "$NET_DEV" "$ALIAS_IP" > /etc/default/lva-net-alias
+printf 'NET_DEV=%s\nLVA_ALIAS_IP=%s\nLVA_ETHERNET_MAC=%s\n' "$NET_DEV" "$ALIAS_IP" "$ETH_MAC" > /etc/default/lva-net-alias
+install -m 755 "$DEST/lva-net-mac.sh" /usr/local/sbin/lva-net-mac.sh
+install -m 644 "$DEST/systemd/lva-net-mac.service" /etc/systemd/system/
 install -m 755 "$DEST/lva-net-alias.sh" /usr/local/sbin/lva-net-alias.sh
 install -m 644 "$DEST/systemd/lva-net-alias.service" /etc/systemd/system/
 install -m 644 "$DEST/systemd/lva-net-alias.timer" /etc/systemd/system/
@@ -244,6 +265,10 @@ fi
 systemctl daemon-reload
 systemctl daemon-reexec 2>/dev/null || true
 systemctl enable --now lva-audio-init.service
+# The MAC unit must be enabled (not started now): it only matters before
+# ifupdown runs, i.e. on the next boot. Starting it here would take eth0 down
+# and drop this SSH session.
+systemctl enable lva-net-mac.service
 systemctl enable --now lva-net-alias.service lva-net-alias.timer
 /usr/local/sbin/lva-net-alias.sh --nowait || true
 systemctl enable --now linux-voice-assistant.service
@@ -262,9 +287,17 @@ echo ">> alsactl must not be able to undo the above:"
 systemctl is-enabled alsa-restore.service; ls -l /var/lib/alsa/asound.state 2>&1 | head -1
 echo ">> addresses on $NET_DEV (expect $ALIAS_IP present):"
 ip -4 addr show "$NET_DEV"
+echo ">> MAC on $NET_DEV is $(cat /sys/class/net/$NET_DEV/address);"
+echo "   $ETH_MAC is pinned on every boot from the next boot onwards (a running"
+echo "   interface refuses a MAC change, which is why this needs a boot-time unit):"
+systemctl is-enabled lva-net-mac.service
 echo ">> audio devices:"
 aplay -L | grep -E 'plughw|default' | head; arecord -L | grep -E 'plughw|default' | head
 echo ">> LED devices:"
 ls /sys/class/leds/ || echo "NO LEDS FOUND - check LP5562 driver"
 
 echo ">> done. Satellite endpoint: $ALIAS_IP:6053"
+echo ">> Reserve this MAC in your router if you want a stable lease: $ETH_MAC"
+echo "   (the board has no MAC in hardware, so until the pinning unit runs on the"
+echo "    next boot the address can be random - that is why a reservation never"
+echo "    matched before)"

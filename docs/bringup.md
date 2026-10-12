@@ -120,6 +120,14 @@ journalctl -u lva-led-bridge -f
 Without `--debug` the bridge is silent and indistinguishable from a broken one -
 it can be connected and driving the LEDs correctly while logging nothing at all.
 
+There is no `connected` event. `LVAEvent` in `peripheral_api.py` has
+`disconnected` but no counterpart, so a bridge that only handles those two sits
+in "disconnected" (red) after boot even once HA is up, until some pipeline event
+happens to repaint it. The documented "HA is reachable" signal is `zeroconf` with
+`status: "connected"` (`satellite.py` emits it on the HA handshake; `__main__.py`
+emits `getting_started` at startup), and the `snapshot` carries `ha_connected`.
+Handle both and the LED leaves red on its own when HA connects.
+
 ## 6. Install from the PC
 
 ```sh
@@ -210,6 +218,65 @@ while playing, and a 10 s tone produces ~1 DMA trigger instead of ~227.
 `api.alsa.disable-batch` does **not** help on this driver.
 
 ## 10. The address Home Assistant connects to
+
+### The MAC address is random on every boot
+
+This is the root cause of the address moving, so look at it first. The board has
+no MAC address programmed anywhere:
+
+```sh
+ethtool -P eth0                                 # Permanent address: 00:00:00:00:00:00
+ls /proc/device-tree/soc/ethernet@104C0000/     # no local-mac-address property
+fw_printenv | grep -i ethaddr                   # nothing
+```
+
+so the `st_gmac` driver falls back to `random_ether_addr()` at probe. Six boots,
+six different probe MACs: `fe:4c:8b:09:17:69`, `be:a1:e9:e6:c5:40`,
+`96:34:84:08:1a:c0`, `0e:b1:51:76:73:02`, `62:d8:1b:4a:c8:ae`, `52:e0:0a:43:fb:92`.
+
+Ubuntu's `/lib/systemd/network/99-default.link` has `MACAddressPolicy=persistent`,
+which derives a stable MAC from `/etc/machine-id` - and it *usually* wins, which
+is why the MAC sometimes looks stable. But it loses the race against ifupdown
+sometimes, and what matters is the MAC dhclient puts on the wire:
+
+```
+boot -3   Listening on LPF/eth0/ <random-mac-1>  <- random, router reservation missed
+boot -2   Listening on LPF/eth0/ <random-mac-2>  <- random, reservation missed
+boot -1   Listening on LPF/eth0/ <PINNED_MAC>  <- persistent, reservation hit
+boot  0   Listening on LPF/eth0/ <PINNED_MAC>  <- persistent, reservation hit
+```
+
+That is the whole "my static DHCP reservation keeps not holding": most boots ask
+for a lease with a brand-new client MAC. `grep 'Listening on LPF/eth0' \
+$(journalctl -b -1 -o cat)` per boot is how to check it.
+
+A udev rule is the obvious fix and it does not work here:
+
+```
+eth0: Failed to write ATTR{/sys/devices/platform/soc/104c0000.ethernet/net/eth0/address}, ignoring: Permission denied
+```
+
+The kernel returns EACCES for a write to `address` while the interface is
+`IFF_UP`, and eth0 is already up by the time udev processes the `add` event.
+(`udevadm test` shows the same thing as `Could not set ... MACAddress= ... Device
+or resource busy`.) So `lva-net-mac.service` does it instead, ordered
+`Before=network-pre.target networking.service ifplugd.service` - the only point at
+which nothing has had the chance to bring the interface up:
+
+```
+lva-net-mac: eth0  <random-mac-6>-> 0e:d3:e0:02:5a:35
+```
+
+**Pin the MAC the box already uses, do not invent one.** LVA derives its ESPHome
+node name from the MAC (`device_name = f"lva-{mac_without_colons}"` in
+`__main__.py`), so `0e:d3:e0:02:5a:35` is why the node is `lva-0ed3e0025a35`.
+Change the MAC and Home Assistant sees a different device. `setup-module.sh`
+therefore records the current MAC into `LVA_ETHERNET_MAC` in
+`/etc/default/lva-net-alias`; override it with `LVA_MAC=...` if you have a
+specific address reserved. Verified across two reboots: probe MAC random each
+time, effective MAC identical, node name unchanged.
+
+### Pinning the address anyway
 
 HA's ESPHome entry stores a host:port. The module's DHCP lease is not stable
 (observed .230 -> .100 across a power cycle), so `setup-module.sh` pins a second,
@@ -334,8 +401,10 @@ manual commands in between, and the boot left behind:
 
 ```sh
 ip -4 addr show eth0            #  <ALIAS_IP>present, DHCP lease (.100) as secondary
+cat /sys/class/net/eth0/address # 0e:d3:e0:02:5a:35, NOT the probe MAC in dmesg
 systemctl is-active linux-voice-assistant lva-led-bridge lva-net-alias.timer   # active active active
 journalctl -u lva-audio-init -b | grep lva-audio-init.sh   # "ALC on and DAC unmuted"
+journalctl -u lva-net-mac -b | grep 'lva-net-mac:'         # "<probe> -> 0e:d3:e0:02:5a:35"
 ss -tlnp | grep 6053            # LISTEN 192.168.1.230:6053
 systemctl is-enabled alsa-restore                           # masked
 amixer -c 0 cget name='ALC ENABLE' | tail -1               # values=on
@@ -345,15 +414,28 @@ Wake word then fired at probability 0.905 (threshold 0.850) with the full LED
 sequence and 2 I2S trigger lines. If a boot does *not* look like this, the alias
 and the codec state are the two things that have ever broken, in that order.
 
-## 12. Still open, and one gotcha
+## 12. Working end to end, and one gotcha
 
-- **Home Assistant has never connected to this module.** `journalctl -u
-  linux-voice-assistant -b | grep -c 'Connected to Home Assistant'` is 0, and the
-  LED bridge's first event is `ha_connected: False`. Everything on the module side
-  is verified working with the test client above, so the remaining step is in the
-  HA UI: add/reload the ESPHome entry pointing at `192.168.1.230:6053`. If it
-  refuses, note that LVA reports `api_encryption_supported: false` - choose the
-  legacy plaintext connection, not a NoNoise key.
+Home Assistant connects and drives the whole pipeline. The journal shows real
+conversations - `"Turn off the bookshelf."` → HA controls a real light → TTS back
+out of the speaker - and the LED bridge shows the full state sequence for each
+turn, including a follow-up turn with no wake word (HA's continue-conversation):
+
+```
+wake_word_detected → listening → stt_text → thinking → tts_text → tts_speaking
+  → tts_finished → listening → stt_text → ...      <- second turn, no wake word
+```
+
+If HA does not connect: `grep -c 'Connected to Home Assistant'` on the unit's
+journal, and check the entry points at `192.168.1.230:6053`. LVA reports
+`api_encryption_supported: false`, so choose the legacy plaintext connection, not
+a NoNoise key.
+
+Still worth doing, on the router: now that the MAC is pinned (section 10), a DHCP
+reservation on `0e:d3:e0:02:5a:35` will actually hold, and the primary lease stops
+moving. The `.230` alias is still what HA connects to, so this is tidiness rather
+than a fix.
+
 - **The RTC is wrong at boot and NTP fixes it mid-boot.** One boot's journal
   contains both `Jul 29 21:41` (RTC) and `Oct 13 05:50` (NTP) timestamps for the
   same events. `journalctl -b` still groups them correctly, but reading timestamps

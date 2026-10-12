@@ -97,11 +97,13 @@ Expected output, and the rest of the bring-up sequence, is in
 - `setup-module.sh` — module-side: deps, LVA build, systemd units, mixer state, stable address
 - `lva-audio-init.sh` — codec state at boot (hardware ALC on, DAC unmuted, mic gain), verified by readback
 - `lva-net-alias.sh` — idempotently pins `192.168.1.230` to `eth0`
+- `lva-net-mac.sh` — pins a stable MAC before ifupdown runs (the board has none in hardware)
 - `config/lva.env` — environment for the LVA service (wake model, audio devices, bind address)
 - `config/dhclient-exit-hooks.d/lva-net-alias` — re-pin the alias on every DHCP state change
 - `config/udev-rules.d/90-alsa-restore.rules` — empty file that shadows the vendor ALSA state restorer
 - `systemd/linux-voice-assistant.service`, `systemd/lva-led-bridge.service`,
-  `systemd/lva-audio-init.service`, `systemd/lva-net-alias.service`, `systemd/lva-net-alias.timer`
+  `systemd/lva-audio-init.service`, `systemd/lva-net-alias.service`,
+  `systemd/lva-net-alias.timer`, `systemd/lva-net-mac.service`
 - `led/led_status.py` — peripheral API → LP5562 sysfs bridge
 - `tools/ha-test-client.py` — real `aioesphomeapi` client: proves the pipeline without HA
 - `tools/okay-nabu.wav` — fixed "okay nabu" stimulus (16 kHz mono) for that test
@@ -119,14 +121,18 @@ Expected output, and the rest of the bring-up sequence, is in
   runs (threshold 0.850), chime audible, LED state machine correct, one I2S DMA
   start/stop for the whole interaction.
 - `192.168.1.230` survives boot and DHCP rebinds; mDNS advertises it on :6053.
+- Home Assistant connects and drives real conversations — "Turn off the
+  bookshelf." → HA controls the light → TTS answers, and continue-conversation
+  gives a second turn with no wake word.
+- The MAC is now deterministic across reboots (`0e:d3:e0:02:5a:35`). It is not
+  deterministic without `lva-net-mac.service`: the hardware has no MAC, so the
+  driver randomises it every boot and a router-side reservation misses most boots.
 
 ## Still open
 
-- Home Assistant has never connected to this module — the ESPHome entry has to be
-  added/reloaded in the HA UI against `192.168.1.230:6053`. Everything on the
-  module side is verified with `tools/ha-test-client.py`.
-- No DHCP reservation for the module's MAC on the router yet. The alias works
-  around it; a reservation is still the right fix for the primary address.
+- Reserve `0e:d3:e0:02:5a:35` on the router. Now that the MAC is pinned the
+  reservation will hold; until then the primary lease keeps moving (the `.230`
+  alias is what HA actually connects to, so this is tidiness, not a fix).
 - 1 GB usable RAM: LVA runs bare metal, no Docker; M5's stock `llm-*` services are
   stopped.
 

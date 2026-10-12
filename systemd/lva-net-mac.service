@@ -1,0 +1,23 @@
+[Unit]
+Description=Pin a stable MAC on the interface before ifupdown and dhclient run
+# The board has no MAC in hardware, so the driver picks a random one every boot
+# and a router-side DHCP reservation cannot hold. systemd's own
+# MACAddressPolicy=persistent usually fixes it but loses the race against
+# ifupdown sometimes; see lva-net-mac.sh for the journal evidence.
+#
+# DefaultDependencies=no plus Before=network-pre.target is the idiom for "run
+# before anything configures the network". The extra Before= lines name the two
+# units that actually run dhclient on this vendor image, so the ordering does not
+# depend on network-pre.target being wired up.
+Documentation=file:/opt/ax630c-ha-voice-satellite/docs/bringup.md
+DefaultDependencies=no
+Before=network-pre.target networking.service ifplugd.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/lva-net-mac.sh
+
+[Install]
+WantedBy=network-pre.target
