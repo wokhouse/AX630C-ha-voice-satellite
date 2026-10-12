@@ -1,0 +1,17 @@
+# Intentionally empty. This shadows /lib/udev/rules.d/90-alsa-restore.rules,
+# which otherwise runs:
+#
+#   alsactl -E HOME=/run/alsa ... restore <card>
+#
+# every time a controlC* device is added. alsa-restore.service does the same at
+# boot and additionally `alsactl store` at shutdown, which is what writes
+# /var/lib/alsa/asound.state - i.e. whatever the codec happened to be doing when
+# the box last went down. On this card that state includes `DAC MUTE` = true,
+# which silences the wake chime and all TTS.
+#
+# Ordering lva-audio-init.service After=alsa-restore.service is not enough: the
+# card is probed late and the udev restore can land after our unit has already
+# applied and verified its settings (on a good boot we won that race by ~20 ms).
+# LVA owns this codec's state outright, so there is nothing for alsactl to
+# restore: no state file, no restore. setup-module.sh removes the state file and
+# masks alsa-restore.service to match.
