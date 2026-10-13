@@ -140,21 +140,22 @@ MODULE_IP=192.168.1.X SSH_OPTS="-i ~/.ssh/id_ed25519_m5llm" ./install.sh
 
 The LVA build compiles on-device (2x Cortex-A53). Expect 10-20 minutes.
 
-`ALIAS_IP` (default `192.168.1.230`) is the address the satellite binds and the
-one you give Home Assistant - see section 10. `MODULE_IP` is only how you reach
-the box the first time.
+`ALIAS_IP` (default: last octet 230 on the subnet of the module's current
+lease) is the address the satellite binds and the one you give Home Assistant -
+see section 10. `MODULE_IP` is only how you reach the box the first time.
 
 ## 7. Wire into Home Assistant
 
 1. Settings -> Devices & services -> Add Integration -> **ESPHome**.
-2. "Set up another instance" -> `192.168.1.230:6053` (the alias `setup-module.sh`
-   pins to the module - see section 10).
+2. "Set up another instance" -> `<ALIAS_IP>:6053` (the alias `setup-module.sh`
+   pins to the module and prints at the end of the install - see section 10).
 3. Settings -> Voice assistants -> your assistant -> wake word "okay nabu" ->
    assign the new satellite.
 
-**Do not type the DHCP address.** The lease moves across power cycles (observed
-.230 -> .100), and HA's ESPHome entry stores the address it was given, so a
-changed IP silently disconnects the satellite. `setup-module.sh` gives the module
+**Do not type the DHCP address.** The lease moves across power cycles (it moved
+off the address it had at install time), and HA's ESPHome entry stores the
+address it was given, so a changed IP silently disconnects the satellite.
+`setup-module.sh` gives the module
 a second, static address that survives DHCP and advertises *that* one in mDNS and
 in `/etc/default/lva`. A router DHCP reservation is still the right thing to do
 for the primary address; the alias is what makes the satellite reachable even when
@@ -231,8 +232,8 @@ fw_printenv | grep -i ethaddr                   # nothing
 ```
 
 so the `st_gmac` driver falls back to `random_ether_addr()` at probe. Six boots,
-six different probe MACs: `fe:4c:8b:09:17:69`, `be:a1:e9:e6:c5:40`,
-`96:34:84:08:1a:c0`, `0e:b1:51:76:73:02`, `62:d8:1b:4a:c8:ae`, `52:e0:0a:43:fb:92`.
+six different probe MACs (all locally administered, none matching any
+reservation).
 
 Ubuntu's `/lib/systemd/network/99-default.link` has `MACAddressPolicy=persistent`,
 which derives a stable MAC from `/etc/machine-id` - and it *usually* wins, which
@@ -240,10 +241,10 @@ is why the MAC sometimes looks stable. But it loses the race against ifupdown
 sometimes, and what matters is the MAC dhclient puts on the wire:
 
 ```
-boot -3   Listening on LPF/eth0/ <random-mac-1>  <- random, router reservation missed
-boot -2   Listening on LPF/eth0/ <random-mac-2>  <- random, reservation missed
-boot -1   Listening on LPF/eth0/ <PINNED_MAC>  <- persistent, reservation hit
-boot  0   Listening on LPF/eth0/ <PINNED_MAC>  <- persistent, reservation hit
+boot -3   Listening on LPF/eth0/<random-mac-1>    <- random, router reservation missed
+boot -2   Listening on LPF/eth0/<random-mac-2>    <- random, reservation missed
+boot -1   Listening on LPF/eth0/<PINNED_MAC>      <- persistent, reservation hit
+boot  0   Listening on LPF/eth0/<PINNED_MAC>      <- persistent, reservation hit
 ```
 
 That is the whole "my static DHCP reservation keeps not holding": most boots ask
@@ -264,12 +265,12 @@ or resource busy`.) So `lva-net-mac.service` does it instead, ordered
 which nothing has had the chance to bring the interface up:
 
 ```
-lva-net-mac: eth0  <random-mac-6>-> 0e:d3:e0:02:5a:35
+lva-net-mac: eth0 <probe-mac> -> <PINNED_MAC>
 ```
 
 **Pin the MAC the box already uses, do not invent one.** LVA derives its ESPHome
 node name from the MAC (`device_name = f"lva-{mac_without_colons}"` in
-`__main__.py`), so `0e:d3:e0:02:5a:35` is why the node is `lva-0ed3e0025a35`.
+`__main__.py`), so the pinned MAC is also the node name Home Assistant knows.
 Change the MAC and Home Assistant sees a different device. `setup-module.sh`
 therefore records the current MAC into `LVA_ETHERNET_MAC` in
 `/etc/default/lva-net-alias`; override it with `LVA_MAC=...` if you have a
@@ -279,12 +280,12 @@ time, effective MAC identical, node name unchanged.
 ### Pinning the address anyway
 
 HA's ESPHome entry stores a host:port. The module's DHCP lease is not stable
-(observed .230 -> .100 across a power cycle), so `setup-module.sh` pins a second,
+(it moved across a power cycle), so `setup-module.sh` pins a second,
 static address to `eth0` and points everything at it:
 
 | file | role |
 |---|---|
-| `/etc/default/lva-net-alias` | `NET_DEV=eth0`, `LVA_ALIAS_IP=192.168.1.230` |
+| `/etc/default/lva-net-alias` | `NET_DEV=eth0`, `LVA_ALIAS_IP=<the alias setup picked>` |
 | `/usr/local/sbin/lva-net-alias.sh` | idempotently ensures the alias exists (`--nowait` for hooks) |
 | `lva-net-alias.service` | runs at boot, `Before=linux-voice-assistant.service` |
 | `lva-net-alias.timer` | re-asserts every 5 min for anything else that flushes the link |
@@ -293,7 +294,8 @@ static address to `eth0` and points everything at it:
 Why the naive approach fails. A `post-up ip addr add ...` in
 `/etc/network/interfaces` looked right and was not. In the journal you can watch
 it happen: the alias is added at boot, then ~80 s later *every* IPv4 address on
-`eth0` is withdrawn and dhclient rebinds to .100 without re-running `ifup`.
+`eth0` is withdrawn and dhclient rebinds to a different address without
+re-running `ifup`.
 `dhclient-script` flushes the interface in the PREINIT/BOUND paths
 (`ip -4 addr flush dev eth0 label eth0`), and an unlabelled `ip addr add` gets
 exactly that label - so the secondary address disappears on a rebind even when the
@@ -301,7 +303,7 @@ lease itself never changed. `ifplugd` re-running `ifup` does not reliably re-run
 `post-up` either. Hence: hook dhclient's state machine, and keep a slow timer as
 a backstop.
 
-`HOST=192.168.1.230` in `/etc/default/lva` is the **bind** address, not just an
+`HOST=<ALIAS_IP>` in `/etc/default/lva` is the **bind** address, not just an
 advertised one. That is deliberate - `HOST=0.0.0.0` makes LVA advertise
 `address = [0.0.0.0]` over mDNS and HA can never connect - but it also means the
 satellite is unreachable if the alias is ever missing. LVA retries the bind 15
@@ -310,19 +312,19 @@ once the alias returns. If HA reports "Can't connect to ...", check the alias
 before anything else:
 
 ```sh
-ip -4 addr show eth0                              # .230 must be there
+ip -4 addr show eth0                              # the alias must be there
 journalctl -u lva-net-alias -b --no-pager
 journalctl -u linux-voice-assistant -b --no-pager | grep -i "failed to bind"
-ss -tlnp | grep 6053                              # listening on .230:6053
+ss -tlnp | grep 6053                              # listening on <ALIAS_IP>:6053
 ```
 
-From another machine, `nc -z  <ALIAS_IP>6053` should succeed. mDNS should
+From another machine, `nc -z <ALIAS_IP> 6053` should succeed. mDNS should
 advertise the same address (avahi is running on the module, so this works there
 and on any other machine on the LAN):
 
 ```sh
 avahi-browse -art | grep esphomelib
-# = lva-0ed3e0025a35._esphomelib._tcp.local. ... lva-0ed3e0025a35.local.  <ALIAS_IP>6053
+# = lva-<mac-hex>._esphomelib._tcp.local. ... lva-<mac-hex>.local. <ALIAS_IP> 6053
 ```
 
 Still ask the router for a DHCP reservation on the module's MAC. The alias keeps
@@ -343,7 +345,7 @@ state machine and the TTS path are exercised end to end.
 # One shot from the PC. Note the path: /tmp is wiped on reboot, the repo copy at
 # /opt/ax630c-ha-voice-satellite is not, and install.sh already put it there.
 K=~/.ssh/id_ed25519_m5llm; R=/opt/ax630c-ha-voice-satellite
-ssh -i $K root@ <ALIAS_IP>"export XDG_RUNTIME_DIR=/run/user/0; dmesg -C
+ssh -i $K root@<ALIAS_IP> "export XDG_RUNTIME_DIR=/run/user/0; dmesg -C
   nohup /opt/linux-voice-assistant/.venv/bin/python $R/tools/ha-test-client.py \
     --timeout 90 --drive --tts-url /opt/linux-voice-assistant/sounds/timer_finished.flac \
     > /tmp/haclient.log 2>&1 &
@@ -372,7 +374,7 @@ legitimate test: it exercises capture, model, network, and playback in one loop.
 A known-good run looks like this:
 
 ```
-connected: name='lva-0ed3e0025a35' model='Linux Voice Assistant' version='45.3.1'
+connected: name='lva-<mac-hex>' model='Linux Voice Assistant' version='45.3.1'
 voice_assistant_feature_flags=61
 entities advertised: 9            # Media Player, Mute, Thinking Sound, sensitivities, mic controls
 VoiceAssistantRequest(start) conversation= flags=0 wake_word='Okay Nabu'
@@ -400,12 +402,12 @@ This exact sequence was last run minutes after a plain `systemctl reboot` with n
 manual commands in between, and the boot left behind:
 
 ```sh
-ip -4 addr show eth0            #  <ALIAS_IP>present, DHCP lease (.100) as secondary
-cat /sys/class/net/eth0/address # 0e:d3:e0:02:5a:35, NOT the probe MAC in dmesg
+ip -4 addr show eth0            # alias present, DHCP lease as secondary
+cat /sys/class/net/eth0/address # <PINNED_MAC>, NOT the probe MAC in dmesg
 systemctl is-active linux-voice-assistant lva-led-bridge lva-net-alias.timer   # active active active
 journalctl -u lva-audio-init -b | grep lva-audio-init.sh   # "ALC on and DAC unmuted"
-journalctl -u lva-net-mac -b | grep 'lva-net-mac:'         # "<probe> -> 0e:d3:e0:02:5a:35"
-ss -tlnp | grep 6053            # LISTEN 192.168.1.230:6053
+journalctl -u lva-net-mac -b | grep 'lva-net-mac:'         # "<probe> -> <PINNED_MAC>"
+ss -tlnp | grep 6053            # LISTEN <ALIAS_IP>:6053
 systemctl is-enabled alsa-restore                           # masked
 amixer -c 0 cget name='ALC ENABLE' | tail -1               # values=on
 ```
@@ -427,13 +429,13 @@ wake_word_detected → listening → stt_text → thinking → tts_text → tts_
 ```
 
 If HA does not connect: `grep -c 'Connected to Home Assistant'` on the unit's
-journal, and check the entry points at `192.168.1.230:6053`. LVA reports
+journal, and check the entry points at `<ALIAS_IP>:6053`. LVA reports
 `api_encryption_supported: false`, so choose the legacy plaintext connection, not
 a NoNoise key.
 
 Still worth doing, on the router: now that the MAC is pinned (section 10), a DHCP
-reservation on `0e:d3:e0:02:5a:35` will actually hold, and the primary lease stops
-moving. The `.230` alias is still what HA connects to, so this is tidiness rather
+reservation on the pinned MAC will actually hold, and the primary lease stops
+moving. The alias is still what HA connects to, so this is tidiness rather
 than a fix.
 
 - **The RTC is wrong at boot and NTP fixes it mid-boot.** One boot's journal

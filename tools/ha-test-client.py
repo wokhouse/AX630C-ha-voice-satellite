@@ -19,7 +19,10 @@ bring-up hard to test without HA:
 This script is a ~200 line client that does the minimum HA does, so the
 acoustic path and the LED state machine can be exercised from a shell:
 
-    python3 ha-test-client.py --host  <ALIAS_IP>--port 6053 --drive
+    python3 ha-test-client.py --drive
+
+(--host defaults to the satellite's own bind address, read from
+/etc/default/lva on the module.)
 
 Then say "okay nabu" to the module (or play a recording of it into the mic).
 Expected: wake chime from the speaker, `WAKE_WORD_DETECTED` / `LISTENING` on
@@ -160,9 +163,21 @@ async def run(args: argparse.Namespace) -> int:
     return 0 if woke.is_set() else 1
 
 
+def default_host() -> str:
+    """The satellite's bind address, from /etc/default/lva on the module."""
+    try:
+        with open("/etc/default/lva") as f:
+            for line in f:
+                if line.startswith("HOST="):
+                    return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    raise SystemExit("--host not given and HOST= not found in /etc/default/lva")
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--host", default="192.168.1.230")
+    p.add_argument("--host", default=None, help="defaults to HOST from /etc/default/lva")
     p.add_argument("--port", type=int, default=6053)
     p.add_argument("--timeout", type=float, default=60.0, help="seconds to wait for a wake word")
     p.add_argument("--drive", action="store_true", help="send the HA pipeline events back after a wake word")
@@ -170,6 +185,8 @@ def main() -> int:
     p.add_argument("--stt-text", default="test transcription")
     p.add_argument("--save-audio", default=None, help="write received mic audio to this wav")
     args = p.parse_args()
+    if args.host is None:
+        args.host = default_host()
     try:
         return asyncio.run(run(args))
     except KeyboardInterrupt:
