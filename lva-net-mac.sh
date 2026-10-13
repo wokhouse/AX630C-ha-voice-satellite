@@ -34,6 +34,7 @@
 set -eu
 
 CONF=/etc/default/lva-net-alias
+# shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
 
 NET_DEV="${NET_DEV:-eth0}"

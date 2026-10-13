@@ -119,7 +119,7 @@ class Led:
         self.set_rgb((0, 0, 0))
 
 
-async def blink_error(led: Led, state_after, stop: asyncio.Event):
+async def blink_error(led: Led, state_after):
     led.set_rgb((255, 0, 0))
     for _ in range(3):
         await asyncio.sleep(0.25)
@@ -160,7 +160,7 @@ async def run(uri: str, led: Led, debug: bool):
                     elif event == "pipeline_error":
                         if blink_task:
                             blink_task.cancel()
-                        blink_task = asyncio.create_task(blink_error(led, "idle", asyncio.Event()))
+                        blink_task = asyncio.create_task(blink_error(led, "idle"))
                         continue  # do not repaint while blinking
                     elif event in COLORS:
                         state = event

@@ -4,7 +4,6 @@ set -euo pipefail
 
 DEST="$(cd "$(dirname "$0")" && pwd)"
 LVA_DIR=/opt/linux-voice-assistant
-SVC_USER=root  # module ships a single-user Ubuntu; revisit if a service user is added
 
 # The address HA's ESPHome entry is pinned to. The vendor image's DHCP lease is
 # not stable (observed .230 then .100 across a power cycle), so we keep a static
@@ -14,8 +13,9 @@ SVC_USER=root  # module ships a single-user Ubuntu; revisit if a service user is
 NET_DEV="${NET_DEV:-eth0}"
 ALIAS_IP="${ALIAS_IP:-192.168.1.230}"
 
-# Ethernet MAC to pin on NET_DEV. Leave empty to derive one from /etc/machine-id.
-# See config/udev-rules.d/90-lva-mac.rules for why this is needed at all: the
+# Ethernet MAC to pin on NET_DEV. Leave empty to keep the MAC the box is
+# already using (LVA derives its ESPHome node name from it, so do not invent
+# one). See lva-net-mac.sh for why this is needed at all: the
 # board has no MAC in hardware, so it changes every boot and a router-side
 # reservation cannot hold. Set this to whatever you reserved in the router.
 LVA_MAC="${LVA_MAC:-}"
@@ -74,7 +74,7 @@ for s in llm-llm llm-asr llm-whisper llm-melotts llm-openai-api llm-audio llm-kw
   systemctl disable "$s" 2>/dev/null || true
 done
 
-echo ">> clone + build linux-voice-assistant (pinned tag)"
+echo ">> clone + build linux-voice-assistant (latest release tag)"
 if [ ! -d "$LVA_DIR" ]; then
   git clone https://github.com/OHF-Voice/linux-voice-assistant.git "$LVA_DIR"
 fi
@@ -238,7 +238,7 @@ if command -v pipewire >/dev/null; then
   su -s /bin/bash root -c 'XDG_RUNTIME_DIR=/run/user/0 systemctl --user daemon-reload' 2>/dev/null || true
   su -s /bin/bash root -c 'XDG_RUNTIME_DIR=/run/user/0 systemctl --user enable --now pipewire pipewire-pulse wireplumber' 2>/dev/null \
     || XDG_RUNTIME_DIR=/run/user/0 systemctl --user enable --now pipewire.socket pipewire-pulse.socket wireplumber 2>/dev/null || true
-  for i in $(seq 1 20); do
+  for _ in $(seq 1 20); do
     [ -S /run/user/0/pulse/native ] && break
     sleep 1
   done
@@ -248,7 +248,7 @@ if command -v pipewire >/dev/null; then
     # 'pro-audio' profile, then let WirePlumber re-enumerate with ACP off.
     rm -f /root/.local/state/wireplumber/default-profile
     XDG_RUNTIME_DIR=/run/user/0 systemctl --user restart wireplumber 2>/dev/null || true
-    for i in $(seq 1 20); do
+    for _ in $(seq 1 20); do
       XDG_RUNTIME_DIR=/run/user/0 pactl list sources short 2>/dev/null | grep -q 'capture\.0\.0' && break
       sleep 1
     done

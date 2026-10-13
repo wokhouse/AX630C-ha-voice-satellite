@@ -139,5 +139,5 @@ Expected output, and the rest of the bring-up sequence, is in
 ## Upstream
 
 - [OHF-Voice/linux-voice-assistant](https://github.com/OHF-Voice/linux-voice-assistant) — the satellite runtime (this repo does not fork it)
-- [OHF-Voice/wyoming-satellite](https://github.com/rhasspy/wyoming-satellite) — deprecated predecessor
+- [rhasspy/wyoming-satellite](https://github.com/rhasspy/wyoming-satellite) — deprecated predecessor
 - [screamnAbdab/lva-led-bridge](https://github.com/screamnAbdab/lva-led-bridge) — LED bridge pattern reference (APA102)
