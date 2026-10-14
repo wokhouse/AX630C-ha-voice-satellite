@@ -2,7 +2,7 @@
 
 Home Assistant voice satellite firmware layer for the **M5Stack Module LLM** (AX630C) + **LLM Mate** (Ethernet).
 
-Turns the Module LLM into an `assist_satellite` device in Home Assistant, matching the Voice Preview Edition feature set as closely as the hardware allows.
+Turns the Module LLM into an `assist_satellite` device in Home Assistant, It matches the Voice Preview Edition feature set as closely as the hardware allows.
 
 ## Architecture
 
@@ -20,7 +20,7 @@ Module LLM (Ubuntu, aarch64)                     Home Assistant
 ```
 
 - All intelligence (STT/LLM/TTS) runs in HA. The module does wake word, audio I/O, and LED state only.
-- HA discovers the satellite through the **existing ESPHome integration** — no Wyoming entries, no new HA integration.
+- HA discovers the satellite through the **existing ESPHome integration**. No Wyoming entries, no new HA integration.
 
 ## Feature parity vs Voice PE
 
@@ -34,49 +34,43 @@ Module LLM (Ubuntu, aarch64)                     Home Assistant
 | Barge-in (AEC) | no — single omni mic, no echo cancellation |
 | Far-field pickup | worse than PE — one MSM421A mic, no array |
 
-## Prerequisites
+## Provisioning: out of the box to voice satellite
 
-- Module LLM flashed with M5's stock Ubuntu image (any current image; no re-flash needed — this is a software layer, not an OS image).
-- LLM Mate attached: Ethernet cable + 5 V supply (not a laptop USB port).
-- SSH reachable from the machine running `install.sh`.
+Do this once per module. [docs/bringup.md](docs/bringup.md) has the long version:
+serial console details, hardware quirks, and everything measured.
 
-## Install
+1. **Assemble.** Slide the Module LLM's speaker aside and attach the FPC-8P
+   cable to the LLM Mate. Ethernet to the LAN, and a 5 V supply (not a laptop
+   USB port). You do not need to re-flash the module. M5's stock Ubuntu image is the
+   base. This repo is a software layer on top of it.
+2. **Console.** Mate Type-C to your PC, then `picocom -b 115200 /dev/ttyUSB0`
+   (115200 8N1). Log in as `root` / `123456`, change the password, and note
+   the eth0 address from `ip a`.
+3. **Install.** From this repo on your PC:
 
-From this repo on your PC:
+   ```sh
+   MODULE_IP=192.168.1.X ./install.sh
+   # if the module's root login wants a specific key:
+   MODULE_IP=192.168.1.X SSH_OPTS="-i ~/.ssh/your_key" ./install.sh
+   ```
 
-```sh
-# 1. discover the module (serial console: `ip a`), then:
-MODULE_IP=192.168.1.X ./install.sh
+   `install.sh` rsyncs this repo to the module and runs `setup-module.sh`
+   there. It:
+   - installs the apt dependencies,
+   - clones and builds linux-voice-assistant (takes a while on the 2x A53),
+   - applies the codec state the vendor image never sets: hardware ALC.
+     Without ALC the wake word never fires,
+   - pins a stable secondary address to `eth0` (default: last octet 230 on
+     the module's subnet. Override with `ALIAS_IP=...`),
+   - installs and enables the systemd units.
 
-# with a dedicated key (this is what the module's root login uses here):
-MODULE_IP=192.168.1.X SSH_OPTS="-i ~/.ssh/id_ed25519_m5llm" ./install.sh
-```
-
-`install.sh` rsyncs this repo to the module and runs `setup-module.sh` there. Setup installs apt deps, clones and builds linux-voice-assistant, pins audio to the onboard card, pins a stable secondary address to `eth0` (by default last octet 230 on the subnet of the module's current lease — override with `ALIAS_IP=...`), installs the systemd units, and enables them. It prints the alias address at the end.
-
-Then in Home Assistant: **Settings → Devices & services → ESPHome → Set up another instance**, enter `<ALIAS_IP>:6053` — the alias, not the DHCP lease. The satellite appears as a device. Select "okay nabu" as the wake word in your voice assistant settings.
-
-## Verify it without Home Assistant
-
-Wake-word detection only runs while *some* client is connected, so a module with
-nothing attached looks dead. `tools/ha-test-client.py` is a real `aioesphomeapi`
-client that arms detection, prints the wake event, and drives the rest of the
-pipeline with synthetic HA events:
-
-```sh
-# install.sh already put tools/ on the module; /tmp is wiped on reboot, this is not
-ssh -i ~/.ssh/id_ed25519_m5llm root@<ALIAS_IP> \
-  '/opt/linux-voice-assistant/.venv/bin/python /opt/ax630c-ha-voice-satellite/tools/ha-test-client.py --drive'
-# then, from a second shell, say "okay nabu" — or play the committed stimulus:
-#   XDG_RUNTIME_DIR=/run/user/0 paplay --device=alsa_output.platform-sound.playback.1.0 \
-#     /opt/ax630c-ha-voice-satellite/tools/okay-nabu.wav
-```
-
-Wait for the client's `subscribed` line before making a sound — detection is armed
-by the subscription, and the first connection after a boot takes ~10 s.
-
-Expected output, and the rest of the bring-up sequence, is in
-[`docs/bringup.md`](docs/bringup.md).
+   It prints the alias address at the end.
+4. **Add to Home Assistant.** Settings → Devices & services → ESPHome →
+   Set up another instance, enter `<ALIAS_IP>:6053`. Use the alias, not the DHCP
+   lease. Select "okay nabu" as the wake word in your voice assistant
+   settings. The first connection after a boot takes ~10 s.
+5. **Say "okay nabu".** The LED turns cyan, the wake chime plays, and HA's
+   Assist pipeline takes it from there.
 
 ## LED states
 
@@ -90,52 +84,6 @@ Expected output, and the rest of the bring-up sequence, is in
 | speaking | green |
 | pipeline error | red, 3 blinks |
 | disconnected from HA | red steady |
-
-## Layout
-
-- `install.sh` — host-side: rsync + ssh bootstrap
-- `setup-module.sh` — module-side: deps, LVA build, systemd units, mixer state, stable address
-- `lva-audio-init.sh` — codec state at boot (hardware ALC on, DAC unmuted, mic gain), verified by readback
-- `lva-net-alias.sh` — idempotently pins the alias address to `eth0`
-- `lva-net-mac.sh` — pins a stable MAC before ifupdown runs (the board has none in hardware)
-- `config/lva.env` — environment for the LVA service (wake model, audio devices, bind address)
-- `config/dhclient-exit-hooks.d/lva-net-alias` — re-pin the alias on every DHCP state change
-- `config/udev-rules.d/90-alsa-restore.rules` — empty file that shadows the vendor ALSA state restorer
-- `systemd/linux-voice-assistant.service`, `systemd/lva-led-bridge.service`,
-  `systemd/lva-audio-init.service`, `systemd/lva-net-alias.service`,
-  `systemd/lva-net-alias.timer`, `systemd/lva-net-mac.service`
-- `led/led_status.py` — peripheral API → LP5562 sysfs bridge
-- `tools/ha-test-client.py` — real `aioesphomeapi` client: proves the pipeline without HA
-- `tools/okay-nabu.wav` — fixed "okay nabu" stimulus (16 kHz mono) for that test
-- `docs/bringup.md` — first bring-up over serial console, and everything measured since
-
-## Verified on this hardware
-
-- LED channels are `/sys/class/leds/{R,G,B}` — auto-detection finds them.
-- Capture is `hw:0,0` (PipeWire `alsa_input.platform-sound.capture.0.0`), playback
-  `hw:0,1` (`alsa_output.platform-sound.playback.1.0`). The mic is on capture
-  channel 1; channel 0 is silent.
-- The stock image ships PipeWire/WirePlumber, but its units carry
-  `ConditionUser=!root` and root is the only user — `setup-module.sh` overrides that.
-- Wake word works after a real reboot: `Okay Nabu` at probability 0.87–0.91 across
-  runs (threshold 0.850), chime audible, LED state machine correct, one I2S DMA
-  start/stop for the whole interaction.
-- The alias address survives boot and DHCP rebinds; mDNS advertises it on :6053.
-- Home Assistant connects and drives real conversations — "Turn off the
-  bookshelf." → HA controls the light → TTS answers, and continue-conversation
-  gives a second turn with no wake word.
-- The MAC is now deterministic across reboots (`setup-module.sh` records the
-  address in use at install time and pins it on every boot). It is not
-  deterministic without `lva-net-mac.service`: the hardware has no MAC, so the
-  driver randomises it every boot and a router-side reservation misses most boots.
-
-## Still open
-
-- Reserve the pinned MAC on the router (setup prints it). Now that the MAC is
-  pinned the reservation will hold; until then the primary lease keeps moving
-  (the alias is what HA actually connects to, so this is tidiness, not a fix).
-- 1 GB usable RAM: LVA runs bare metal, no Docker; M5's stock `llm-*` services are
-  stopped.
 
 ## Upstream
 
