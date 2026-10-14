@@ -9,6 +9,7 @@
 #
 # This file is SOURCED by dhclient-script (run_hookdir), so: no `exit`, no
 # `set -u`, and keep it quiet.
+# shellcheck shell=bash disable=SC2154  # $reason is set by dhclient-script
 case "$reason" in
   PREINIT|BOUND|REBOOT|REBIND|RENEW|FAIL)
     /usr/local/sbin/lva-net-alias.sh --nowait >/dev/null 2>&1 || true

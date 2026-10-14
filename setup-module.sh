@@ -4,18 +4,29 @@ set -euo pipefail
 
 DEST="$(cd "$(dirname "$0")" && pwd)"
 LVA_DIR=/opt/linux-voice-assistant
-SVC_USER=root  # module ships a single-user Ubuntu; revisit if a service user is added
 
 # The address HA's ESPHome entry is pinned to. The vendor image's DHCP lease is
-# not stable (observed .230 then .100 across a power cycle), so we keep a static
+# not stable (the lease moved across a power cycle), so we keep a static
 # secondary address on the interface and bind the satellite endpoint to it.
-# If you have made a DHCP reservation on the router, set ALIAS_IP to that address
-# (or leave NET_DEV/ALIAS_IP as they are and the units still work).
+# Default: last octet 230 on the subnet of the interface's current lease, so
+# the repo carries no site-specific address. Override with ALIAS_IP=... if you
+# reserved a different address in your router.
 NET_DEV="${NET_DEV:-eth0}"
-ALIAS_IP="${ALIAS_IP:-192.168.1.230}"
+ALIAS_IP="${ALIAS_IP:-}"
+ALIAS_LAST_OCTET="${ALIAS_LAST_OCTET:-230}"
+if [ -z "$ALIAS_IP" ]; then
+  ALIAS_IP="$(ip -4 -o addr show dev "$NET_DEV" scope global 2>/dev/null \
+    | awk -v oct="$ALIAS_LAST_OCTET" '{split($4,a,"/"); if (a[1] ~ /^[0-9]+(\.[0-9]+){3}$/) {split(a[1],o,"."); print o[1] "." o[2] "." o[3] "." oct; exit}}')"
+  if [ -z "$ALIAS_IP" ]; then
+    echo ">> ERROR: no IPv4 lease on $NET_DEV to derive the alias from; set ALIAS_IP=... and re-run" >&2
+    exit 1
+  fi
+fi
+echo ">> stable alias address: $ALIAS_IP (override with ALIAS_IP=...)"
 
-# Ethernet MAC to pin on NET_DEV. Leave empty to derive one from /etc/machine-id.
-# See config/udev-rules.d/90-lva-mac.rules for why this is needed at all: the
+# Ethernet MAC to pin on NET_DEV. Leave empty to keep the MAC the box is
+# already using (LVA derives its ESPHome node name from it, so do not invent
+# one). See lva-net-mac.sh for why this is needed at all: the
 # board has no MAC in hardware, so it changes every boot and a router-side
 # reservation cannot hold. Set this to whatever you reserved in the router.
 LVA_MAC="${LVA_MAC:-}"
@@ -74,7 +85,7 @@ for s in llm-llm llm-asr llm-whisper llm-melotts llm-openai-api llm-audio llm-kw
   systemctl disable "$s" 2>/dev/null || true
 done
 
-echo ">> clone + build linux-voice-assistant (pinned tag)"
+echo ">> clone + build linux-voice-assistant (latest release tag)"
 if [ ! -d "$LVA_DIR" ]; then
   git clone https://github.com/OHF-Voice/linux-voice-assistant.git "$LVA_DIR"
 fi
@@ -201,7 +212,7 @@ ETH_MAC="${LVA_MAC:-$(cat "/sys/class/net/$NET_DEV/address")}"
 echo ">> will pin the ethernet MAC to $ETH_MAC on every boot"
 
 # ------------------------------------------------------------------ addressing
-# Keep  <ALIAS_IP>present. A `post-up ip addr add` in /etc/network/interfaces
+# Keep the alias address present. A `post-up ip addr add` in /etc/network/interfaces
 # is not enough: dhclient rebinds without ifup (observed ~80 s after boot, when
 # NTP stepped the clock) and dhclient-script flushes the interface's addresses,
 # which takes the unlabelled secondary with it. Re-assert from a dhclient exit
@@ -238,7 +249,7 @@ if command -v pipewire >/dev/null; then
   su -s /bin/bash root -c 'XDG_RUNTIME_DIR=/run/user/0 systemctl --user daemon-reload' 2>/dev/null || true
   su -s /bin/bash root -c 'XDG_RUNTIME_DIR=/run/user/0 systemctl --user enable --now pipewire pipewire-pulse wireplumber' 2>/dev/null \
     || XDG_RUNTIME_DIR=/run/user/0 systemctl --user enable --now pipewire.socket pipewire-pulse.socket wireplumber 2>/dev/null || true
-  for i in $(seq 1 20); do
+  for _ in $(seq 1 20); do
     [ -S /run/user/0/pulse/native ] && break
     sleep 1
   done
@@ -248,7 +259,7 @@ if command -v pipewire >/dev/null; then
     # 'pro-audio' profile, then let WirePlumber re-enumerate with ACP off.
     rm -f /root/.local/state/wireplumber/default-profile
     XDG_RUNTIME_DIR=/run/user/0 systemctl --user restart wireplumber 2>/dev/null || true
-    for i in $(seq 1 20); do
+    for _ in $(seq 1 20); do
       XDG_RUNTIME_DIR=/run/user/0 pactl list sources short 2>/dev/null | grep -q 'capture\.0\.0' && break
       sleep 1
     done

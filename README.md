@@ -7,7 +7,7 @@ Turns the Module LLM into an `assist_satellite` device in Home Assistant, matchi
 ## Architecture
 
 ```
-Module LLM (Ubuntu, aarch64)                     Home Assistant (192.168.1.116)
+Module LLM (Ubuntu, aarch64)                     Home Assistant
 +-------------------------------------------+    +--------------------------+
 | linux-voice-assistant (OHF-Voice)         |--ESPHome protocol (TCP 6053)->| ESPHome integration |
 |  - on-device wake word: okay_nabu         |    |  - Assist pipeline       |
@@ -52,9 +52,9 @@ MODULE_IP=192.168.1.X ./install.sh
 MODULE_IP=192.168.1.X SSH_OPTS="-i ~/.ssh/id_ed25519_m5llm" ./install.sh
 ```
 
-`install.sh` rsyncs this repo to the module and runs `setup-module.sh` there. Setup installs apt deps, clones and builds linux-voice-assistant, pins audio to the onboard card, pins a stable secondary address (`192.168.1.230`) to `eth0`, installs the systemd units, and enables them.
+`install.sh` rsyncs this repo to the module and runs `setup-module.sh` there. Setup installs apt deps, clones and builds linux-voice-assistant, pins audio to the onboard card, pins a stable secondary address to `eth0` (by default last octet 230 on the subnet of the module's current lease — override with `ALIAS_IP=...`), installs the systemd units, and enables them. It prints the alias address at the end.
 
-Then in Home Assistant: **Settings → Devices & services → ESPHome → Set up another instance**, enter `192.168.1.230:6053` — the alias, not the DHCP lease. The satellite appears as a device. Select "okay nabu" as the wake word in your voice assistant settings.
+Then in Home Assistant: **Settings → Devices & services → ESPHome → Set up another instance**, enter `<ALIAS_IP>:6053` — the alias, not the DHCP lease. The satellite appears as a device. Select "okay nabu" as the wake word in your voice assistant settings.
 
 ## Verify it without Home Assistant
 
@@ -65,7 +65,7 @@ pipeline with synthetic HA events:
 
 ```sh
 # install.sh already put tools/ on the module; /tmp is wiped on reboot, this is not
-ssh -i ~/.ssh/id_ed25519_m5llm root@ <ALIAS_IP>\
+ssh -i ~/.ssh/id_ed25519_m5llm root@<ALIAS_IP> \
   '/opt/linux-voice-assistant/.venv/bin/python /opt/ax630c-ha-voice-satellite/tools/ha-test-client.py --drive'
 # then, from a second shell, say "okay nabu" — or play the committed stimulus:
 #   XDG_RUNTIME_DIR=/run/user/0 paplay --device=alsa_output.platform-sound.playback.1.0 \
@@ -96,7 +96,7 @@ Expected output, and the rest of the bring-up sequence, is in
 - `install.sh` — host-side: rsync + ssh bootstrap
 - `setup-module.sh` — module-side: deps, LVA build, systemd units, mixer state, stable address
 - `lva-audio-init.sh` — codec state at boot (hardware ALC on, DAC unmuted, mic gain), verified by readback
-- `lva-net-alias.sh` — idempotently pins `192.168.1.230` to `eth0`
+- `lva-net-alias.sh` — idempotently pins the alias address to `eth0`
 - `lva-net-mac.sh` — pins a stable MAC before ifupdown runs (the board has none in hardware)
 - `config/lva.env` — environment for the LVA service (wake model, audio devices, bind address)
 - `config/dhclient-exit-hooks.d/lva-net-alias` — re-pin the alias on every DHCP state change
@@ -120,24 +120,25 @@ Expected output, and the rest of the bring-up sequence, is in
 - Wake word works after a real reboot: `Okay Nabu` at probability 0.87–0.91 across
   runs (threshold 0.850), chime audible, LED state machine correct, one I2S DMA
   start/stop for the whole interaction.
-- `192.168.1.230` survives boot and DHCP rebinds; mDNS advertises it on :6053.
+- The alias address survives boot and DHCP rebinds; mDNS advertises it on :6053.
 - Home Assistant connects and drives real conversations — "Turn off the
   bookshelf." → HA controls the light → TTS answers, and continue-conversation
   gives a second turn with no wake word.
-- The MAC is now deterministic across reboots (`0e:d3:e0:02:5a:35`). It is not
+- The MAC is now deterministic across reboots (`setup-module.sh` records the
+  address in use at install time and pins it on every boot). It is not
   deterministic without `lva-net-mac.service`: the hardware has no MAC, so the
   driver randomises it every boot and a router-side reservation misses most boots.
 
 ## Still open
 
-- Reserve `0e:d3:e0:02:5a:35` on the router. Now that the MAC is pinned the
-  reservation will hold; until then the primary lease keeps moving (the `.230`
-  alias is what HA actually connects to, so this is tidiness, not a fix).
+- Reserve the pinned MAC on the router (setup prints it). Now that the MAC is
+  pinned the reservation will hold; until then the primary lease keeps moving
+  (the alias is what HA actually connects to, so this is tidiness, not a fix).
 - 1 GB usable RAM: LVA runs bare metal, no Docker; M5's stock `llm-*` services are
   stopped.
 
 ## Upstream
 
 - [OHF-Voice/linux-voice-assistant](https://github.com/OHF-Voice/linux-voice-assistant) — the satellite runtime (this repo does not fork it)
-- [OHF-Voice/wyoming-satellite](https://github.com/rhasspy/wyoming-satellite) — deprecated predecessor
+- [rhasspy/wyoming-satellite](https://github.com/rhasspy/wyoming-satellite) — deprecated predecessor
 - [screamnAbdab/lva-led-bridge](https://github.com/screamnAbdab/lva-led-bridge) — LED bridge pattern reference (APA102)

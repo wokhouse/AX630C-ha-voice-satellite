@@ -7,16 +7,16 @@
 #   fw_printenv                                  -> no ethaddr
 # so the driver falls back to random_ether_addr() at probe and hands out a fresh
 # locally-administered MAC on every boot. Observed probe MACs across four boots:
-#    <random-mac-1>  <random-mac-2>  <random-mac-3> 0e:b1:51:76:73:02
+#   <random-mac-1>  <random-mac-2>  <random-mac-3>  <random-mac-4>
 #
 # systemd's /lib/systemd/network/99-default.link (MACAddressPolicy=persistent)
 # does compute a stable MAC from /etc/machine-id, and it usually wins - but it
 # loses the race against ifupdown sometimes. From the journal, the MAC that
 # dhclient actually put on the wire:
-#   boot -3  Listening on LPF/eth0/ <random-mac-1>  <- random, reservation missed
-#   boot -2  Listening on LPF/eth0/ <random-mac-2>  <- random, reservation missed
-#   boot -1  Listening on LPF/eth0/ <PINNED_MAC>  <- persistent, hit
-#   boot  0  Listening on LPF/eth0/ <PINNED_MAC>  <- persistent, hit
+#   boot -3  Listening on LPF/eth0/<random-mac-1>    <- random, reservation missed
+#   boot -2  Listening on LPF/eth0/<random-mac-2>    <- random, reservation missed
+#   boot -1  Listening on LPF/eth0/<PINNED_MAC>      <- persistent, hit
+#   boot  0  Listening on LPF/eth0/<PINNED_MAC>      <- persistent, hit
 # That is the whole reason a router-side reservation "keeps not holding": the
 # router sees a different client most of the time.
 #
@@ -34,6 +34,7 @@
 set -eu
 
 CONF=/etc/default/lva-net-alias
+# shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
 
 NET_DEV="${NET_DEV:-eth0}"

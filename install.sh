@@ -6,10 +6,11 @@
 # fails with "Operation not permitted". Pass it through:
 #   MODULE_IP=192.168.1.X SSH_OPTS="-i ~/.ssh/id_ed25519_m5llm" ./install.sh
 #
-# ALIAS_IP (default 192.168.1.230) is the stable address the satellite is bound
-# to and the address to give Home Assistant; see docs/bringup.md section 10.
+# ALIAS_IP (default: last octet 230 on the subnet of MODULE_IP) is the stable
+# address the satellite is bound to and the address to give Home Assistant;
+# see docs/bringup.md section 10.
 #
-# LVA_MAC (default: derived from /etc/machine-id) is the MAC pinned on the
+# LVA_MAC (default: the MAC the box is already using) is the MAC pinned on the
 # interface. The board has no MAC in hardware, so it is random every boot until
 # this is pinned; set it to whatever you reserved in your router.
 set -euo pipefail
@@ -20,8 +21,11 @@ SSH_OPTS="${SSH_OPTS:-}"
 # Passed through to setup-module.sh, which pins this address to the interface and
 # binds the satellite endpoint to it. Home Assistant's ESPHome entry must use
 # THIS address, not MODULE_IP - MODULE_IP is only how you reach the box once.
+# Derived from MODULE_IP so the final hint below names the real address;
+# setup-module.sh derives it from the interface's lease when run without it.
 NET_DEV="${NET_DEV:-eth0}"
-ALIAS_IP="${ALIAS_IP:-192.168.1.230}"
+ALIAS_LAST_OCTET="${ALIAS_LAST_OCTET:-230}"
+ALIAS_IP="${ALIAS_IP:-${MODULE_IP%.*}.${ALIAS_LAST_OCTET}}"
 LVA_MAC="${LVA_MAC:-}"
 export NET_DEV ALIAS_IP LVA_MAC
 DEST=/opt/ax630c-ha-voice-satellite
